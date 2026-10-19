@@ -716,3 +716,210 @@ def test_flextemplate_keep_aspect_ratio_badinput():
     pdf = FPDF()
     with raises(TypeError):
         FlexTemplate(pdf, tmpl)
+
+
+def test_flextemplate_flow_layout():
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("helvetica", size=10)
+
+    elements = [
+        {
+            "name": "first",
+            "type": "T",
+            "w": 50,
+            "h": 10,
+            "text": "First",
+            "new_x": "RIGHT",
+            "new_y": "TOP",
+        },
+        {
+            "name": "second",
+            "type": "T",
+            "w": 50,
+            "h": 10,
+            "text": "Second",
+            "new_x": "LMARGIN",
+            "new_y": "NEXT",
+        },
+    ]
+
+    template = FlexTemplate(pdf, elements)
+    template.render()
+
+    assert pdf.x == pdf.l_margin
+    assert pdf.y == pytest.approx(30)
+
+
+def test_flextemplate_flow_layout_horizontal():
+    pdf = FPDF()
+    pdf.add_page()
+
+    elements = [
+        {
+            "name": "one",
+            "type": "B",
+            "w": 20,
+            "h": 10,
+            "new_x": "RIGHT",
+            "new_y": "TOP",
+        },
+        {
+            "name": "two",
+            "type": "B",
+            "w": 30,
+            "h": 10,
+            "new_x": "RIGHT",
+            "new_y": "TOP",
+        },
+    ]
+
+    template = FlexTemplate(pdf, elements)
+    template.render()
+
+    assert pdf.x == pytest.approx(pdf.l_margin + 50)
+    assert pdf.y == pytest.approx(pdf.t_margin)
+
+
+def test_flextemplate_flow_layout_width_zero():
+    pdf = FPDF()
+    pdf.add_page()
+
+    elements = [
+        {
+            "name": "full_width",
+            "type": "B",
+            "w": 0,
+            "h": 10,
+            "new_x": "LMARGIN",
+            "new_y": "NEXT",
+        },
+    ]
+
+    template = FlexTemplate(pdf, elements)
+    template.render()
+
+    assert pdf.x == pytest.approx(pdf.l_margin)
+    assert pdf.y == pytest.approx(pdf.t_margin + 10)
+
+
+def test_flextemplate_flow_layout_explicit_and_automatic():
+    pdf = FPDF()
+    pdf.add_page()
+
+    elements = [
+        {
+            "name": "absolute",
+            "type": "B",
+            "x1": 10,
+            "y1": 20,
+            "x2": 30,
+            "y2": 30,
+        },
+        {
+            "name": "flow",
+            "type": "B",
+            "w": 20,
+            "h": 10,
+            "new_x": "RIGHT",
+            "new_y": "NEXT",
+        },
+    ]
+
+    template = FlexTemplate(pdf, elements)
+    template.render()
+
+    # Absolute elements don't modify the flow cursor.
+    assert pdf.x == pytest.approx(pdf.l_margin + 20)
+    assert pdf.y == pytest.approx(pdf.t_margin + 10)
+
+
+def test_flextemplate_flow_layout_margins():
+    pdf = FPDF()
+    pdf.add_page()
+
+    elements = [
+        {
+            "name": "first",
+            "type": "B",
+            "w": 20,
+            "h": 10,
+            "new_x": "RMARGIN",
+            "new_y": "TMARGIN",
+        },
+        {
+            "name": "second",
+            "type": "B",
+            "w": 20,
+            "h": 10,
+            "new_x": "LMARGIN",
+            "new_y": "BMARGIN",
+        },
+    ]
+
+    template = FlexTemplate(pdf, elements)
+    template.render()
+
+    assert pdf.x == pytest.approx(pdf.l_margin)
+    assert pdf.y == pytest.approx(pdf.h - pdf.b_margin)
+
+
+def test_flextemplate_flow_layout_json(tmp_path):
+    json_file = tmp_path / "template.json"
+    json_file.write_text(
+        """
+        [
+            {
+                "name": "first",
+                "type": "T",
+                "w": 50,
+                "h": 10,
+                "text": "First",
+                "new_x": "RIGHT",
+                "new_y": "TOP"
+            },
+            {
+                "name": "second",
+                "type": "T",
+                "w": 50,
+                "h": 10,
+                "text": "Second",
+                "new_x": "LMARGIN",
+                "new_y": "NEXT"
+            }
+        ]
+        """,
+        encoding="utf-8",
+    )
+
+    pdf = FPDF()
+    pdf.add_page()
+    template = FlexTemplate(pdf)
+    template.parse_json(json_file)
+    template.render()
+
+    assert pdf.x == pytest.approx(pdf.l_margin)
+    assert pdf.y == pytest.approx(pdf.t_margin + 10)
+
+
+def test_flextemplate_absolute_layout_is_backward_compatible():
+    pdf = FPDF()
+    pdf.add_page()
+
+    elements = [
+        {
+            "name": "box",
+            "type": "B",
+            "x1": 10,
+            "y1": 20,
+            "x2": 50,
+            "y2": 40,
+        }
+    ]
+
+    template = FlexTemplate(pdf, elements)
+    template.render()
+
+    # No flow properties: current PDF position is not changed.
+    assert pdf.x == pytest.approx(pdf.l_margin)
+    assert pdf.y == pytest.approx(pdf.t_margin)

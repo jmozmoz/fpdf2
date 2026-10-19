@@ -8,6 +8,8 @@
 # * Maintainer:  David Alexander (daveankin@gmail.com) et al since 2017 est. *
 # * Maintainer:  Lucas Cimon et al since 2021 est.                           *
 # ****************************************************************************
+import traceback
+
 import hashlib
 import io
 import logging
@@ -684,6 +686,8 @@ class FPDF(GraphicsStateMixin, TextRegionMixin):
         if right == -1:
             right = left
         self.r_margin = right
+        
+        print('debug1')
 
     def set_left_margin(self, margin: float) -> None:
         """
@@ -1303,6 +1307,9 @@ class FPDF(GraphicsStateMixin, TextRegionMixin):
             page = self.pages[self.page]
         self.x = self.l_margin
         self.y = self.t_margin
+        
+        print('debug2')
+
         self.font_family = ""
         self.font_stretching = 100
         self.char_spacing = 0
@@ -4379,6 +4386,8 @@ class FPDF(GraphicsStateMixin, TextRegionMixin):
         if new_y == YPos.BMARGIN:
             self.y = self.h - self.b_margin
 
+        print('debug3', self.x, self.y)
+
         return page_break_triggered
 
     def _add_quad_points(self, x: float, y: float, w: float, h: float) -> None:
@@ -5074,6 +5083,7 @@ class FPDF(GraphicsStateMixin, TextRegionMixin):
                 DeprecationWarning,
                 stacklevel=get_stack_level(),
             )
+        print('start multicell:', self.x, self.y, dry_run, split_only)
         if dry_run or split_only:
             with self._disable_writing():
                 return self.multi_cell(
@@ -5283,6 +5293,8 @@ class FPDF(GraphicsStateMixin, TextRegionMixin):
         elif new_y == YPos.NEXT:  # move down by bottom padding
             self.y += padding.bottom
 
+        print('debug4')
+
         if markdown:
             self.font_style = prev_font_style
             self.current_font = prev_current_font
@@ -5292,6 +5304,8 @@ class FPDF(GraphicsStateMixin, TextRegionMixin):
             self.x += padding.right
         elif new_x == XPos.LEFT:  # move left by left padding to align outer LHS edge
             self.x -= padding.left
+
+        print('stop multicell:', self.x, self.y)
 
         output = MethodReturnValue.coerce(output)
         return_value = ()
@@ -5738,6 +5752,7 @@ class FPDF(GraphicsStateMixin, TextRegionMixin):
             else:
                 self.draw_path(path, copy=False)
         finally:
+            print('debug10')
             self.set_xy(old_x, old_y)
         if link:
             self.link(x, y, w, h, link)
@@ -6016,6 +6031,9 @@ class FPDF(GraphicsStateMixin, TextRegionMixin):
         """
         self.x = self.l_margin
         self.y = y if y >= 0 else self.h + y
+        
+        print('debug6', self.x, self.y)
+
 
     def set_xy(self, x: float, y: float) -> None:
         """
@@ -6026,6 +6044,8 @@ class FPDF(GraphicsStateMixin, TextRegionMixin):
             x (float): the new current abscissa
             y (float): the new current ordinate
         """
+        
+        # traceback.print_stack(file=sys.stdout)
         self.set_y(y)
         self.set_x(x)
 

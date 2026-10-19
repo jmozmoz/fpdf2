@@ -16,10 +16,9 @@ import warnings
 from typing import Any, Optional, Sequence
 
 from .deprecation import get_stack_level
-from .enums import WrapMode
+from .enums import WrapMode, XPos, YPos
 from .errors import FPDFException
 from .fpdf import FPDF
-
 
 def _rgb(col: int) -> tuple[float, float, float]:
     return (col // 65536), (col // 256 % 256), (col % 256)
@@ -81,10 +80,14 @@ class FlexTemplate:
             # key: type
             "name": (str, type(None)),
             "type": (str, type(None)),
-            "x1": (int, float),
-            "y1": (int, float),
-            "x2": (int, float),
-            "y2": (int, float),
+            "x1": (int, float, type(None)),
+            "y1": (int, float, type(None)),
+            "x2": (int, float, type(None)),
+            "y2": (int, float, type(None)),
+            "w": (int, float, type(None)),
+            "h": (int, float, type(None)),
+            "new_x": (str, XPos, type(None)),
+            "new_y": (str, YPos, type(None)),
             "font": (str, type(None)),
             "size": (int, float),
             "bold": object,  # "bool or equivalent"
@@ -108,7 +111,7 @@ class FlexTemplate:
             # priority is optional, but we need a default for sorting.
             if not "priority" in e:
                 e["priority"] = 0
-            for k in ("name", "type", "x1", "y1", "y2"):
+            for k in ("name", "type"):
                 if k not in e:
                     if e["type"] == "C39":
                         # lots of legacy special casing.
@@ -124,12 +127,57 @@ class FlexTemplate:
                             e["y2"] = e["y1"] + e["h"]
                             continue
                     raise KeyError(f"Mandatory key '{k}' missing in input data")
+
+            # An element can either use the traditional absolute coordinates
+            # or automatic positioning using the current layout cursor.
+            #
+            # x2/y2 remain optional for flow-layout elements because they can
+            # be derived from x1/y1 + w/h.
+            if "x2" not in e and e["type"] in ["BC", "C39"]:
+                e["x2"] = 0
+
+            has_flow_properties = any(
+                key in e for key in ("w", "h", "new_x", "new_y")
+            )
+            has_coordinates = any(
+                key in e for key in ("x1", "y1", "x2", "y2")
+            )
+
+            print('debug!')
+            print(has_flow_properties, has_coordinates)
+            if has_flow_properties and not has_coordinates:
+                # Fully automatic element: x/y will be taken from the
+                # layout cursor at render time.
+                pass
+            elif not has_coordinates:
+                raise KeyError(
+                    "Template element must define either x1/y1/x2/y2 "
+                    "or flow-layout properties"
+                )
+
+            # If any coordinate is missing, it must be possible to derive it
+            # from the corresponding flow dimension.
+            if "x1" not in e and "w" not in e:
+                raise KeyError(
+                    "Missing 'x1': automatic positioning requires 'w'"
+                )
+            if "y1" not in e and "h" not in e:
+                raise KeyError(
+                    "Missing 'y1': automatic positioning requires 'h'"
+                )
+            if "x2" not in e and "w" not in e and e["type"] not in ["BC", "C39"]:
+                raise KeyError(
+                    "Missing 'x2': automatic positioning requires 'w'"
+                )
+            if "y2" not in e and "h" not in e:
+                raise KeyError(
+                    "Missing 'y2': automatic positioning requires 'h'"
+                )
+
             # x2 is optional for barcode types, but needed for offset rendering
             if "x2" not in e:
                 if e["type"] in ["BC", "C39"]:
                     e["x2"] = 0
-                else:
-                    raise KeyError("Mandatory key 'x2' missing in input data")
             if not "size" in e and e["type"] == "C39":
                 if "w" in e:
                     e["size"] = e["w"]
@@ -252,6 +300,10 @@ class FlexTemplate:
             ("rotate", _varsep_float, False),
             ("wrapmode", str, False),
             ("keep_aspect_ratio", int, False),
+            ("w", _varsep_float, False),
+            ("h", _varsep_float, False),
+            ("new_x", str, False),
+            ("new_y", str, False),
         )
         self.elements = []
         if encoding is None:
@@ -400,11 +452,13 @@ class FlexTemplate:
         if underline:
             style += "U"
         pdf.set_font(font, style, size * scale)
+        print('debug8')
         pdf.set_xy(x1, y1)
         width, height = x2 - x1, y2 - y1
         if multiline is None:  # write without wrapping/trimming (default)
             pdf.cell(w=width, h=height, text=text, border=0, align=align, fill=fill)
         elif multiline:  # automatic word - warp
+            print('multi_cell:', width, height, text, align, fill)
             pdf.multi_cell(
                 w=width,
                 h=height,
@@ -682,8 +736,135 @@ class FlexTemplate:
         if underline:
             style += "U"
         pdf.set_font(font, style, size * scale)
+        print('debug9')
         pdf.set_xy(x1, y1)
         pdf.write(5, text, link)
+
+    def _resolve_element_position(
+        self,
+        element: dict[str, Any],
+        cursor_x: float,
+        cursor_y: float,
+    ) -> tuple[float, float, float, float]:
+        """
+        Resolve an element's bounding box.
+
+        Existing template elements use x1/y1/x2/y2.
+        Flow-layout elements may omit coordinates and instead use the
+        current layout cursor together with w/h.
+        """
+        x1 = element.get("x1")
+        y1 = element.get("y1")
+        x2 = element.get("x2")
+        y2 = element.get("y2")
+        w = element.get("w")
+        h = element.get("h")
+
+        if x1 is None:
+            x1 = cursor_x
+        if y1 is None:
+            y1 = cursor_y
+
+        if x2 is None:
+            if w is None:
+                if element["type"].upper() in ("T", "W"):
+                    # Match FPDF.cell(): omitted width means text width.
+                    style = ""
+                    if element.get("bold"):
+                        style += "B"
+                    if element.get("italic"):
+                        style += "I"
+                    if element.get("underline"):
+                        style += "U"
+
+                    with self.pdf.local_context():
+                        self.pdf.set_font(
+                            element.get("font") or "helvetica",
+                            style=style,
+                            size=element.get("size", 10),
+                        )
+                        w = self.pdf.get_string_width(
+                            str(element.get("text") or "")
+                        )
+                else:
+                    raise KeyError(
+                        f"Element '{element.get('name')}' requires "
+                        "either 'x2' or 'w'"
+                    )
+
+            # Match FPDF.cell(w=0): extend to the right margin.
+            if w == 0:
+                x2 = self.pdf.w - self.pdf.r_margin
+            else:
+                x2 = x1 + w
+
+        if y2 is None:
+            if h is None:
+                if element["type"].upper() in ("T", "W"):
+                    # Match FPDF.cell(): omitted height means current
+                    # font size.
+                    h = element.get("size", 10)
+                else:
+                    raise KeyError(
+                        f"Element '{element.get('name')}' requires "
+                        "either 'y2' or 'h'"
+                    )
+            y2 = y1 + h
+
+        return float(x1), float(y1), float(x2), float(y2)
+
+    @staticmethod
+    def _update_layout_cursor(
+        x1: float,
+        y1: float,
+        x2: float,
+        y2: float,
+        new_x: XPos | str | None,
+        new_y: YPos | str | None,
+        pdf: FPDF,
+    ) -> tuple[float, float]:
+        """
+        Calculate the next layout cursor using the same semantics as
+        FPDF.cell(new_x=..., new_y=...).
+        """
+        new_x = XPos.coerce(new_x or XPos.RIGHT)
+        new_y = YPos.coerce(new_y or YPos.TOP)
+
+        if new_x == XPos.LEFT:
+            cursor_x = x1
+        elif new_x == XPos.RIGHT:
+            cursor_x = x2
+        elif new_x == XPos.LMARGIN:
+            cursor_x = pdf.l_margin
+        elif new_x == XPos.RMARGIN:
+            cursor_x = pdf.w - pdf.r_margin
+        elif new_x in (XPos.START, XPos.END, XPos.WCONT, XPos.CENTER):
+            # These values depend on the actual rendered text width in
+            # FPDF.cell(). A template element has a bounding box, so the
+            # corresponding positions are derived from that box.
+            if new_x == XPos.START:
+                cursor_x = x1
+            elif new_x == XPos.END:
+                cursor_x = x2
+            elif new_x == XPos.WCONT:
+                cursor_x = x2
+            else:
+                cursor_x = x1 + (x2 - x1) / 2
+        else:
+            cursor_x = x1
+
+        if new_y in (YPos.TOP, YPos.LAST):
+            cursor_y = y1
+        elif new_y == YPos.NEXT:
+            cursor_y = y2
+        elif new_y == YPos.TMARGIN:
+            cursor_y = pdf.t_margin
+        elif new_y == YPos.BMARGIN:
+            cursor_y = pdf.h - pdf.b_margin
+        else:
+            cursor_y = y1
+
+        return cursor_x, cursor_y
 
     def render(
         self,
@@ -701,10 +882,27 @@ class FlexTemplate:
             scale (float): Scale the inserted template by this factor.
         """
         sorted_elements = sorted(self.elements, key=lambda x: x["priority"])
+
         with self.pdf.local_context():
             for element in sorted_elements:
                 ele = element.copy()  # don't want to modify the callers original
                 ele["text"] = self.texts.get(ele["name"].lower(), ele.get("text", ""))
+
+                print("render start:", self.pdf.x, self.pdf.y)
+
+                # Resolve automatic coordinates before applying the existing
+                # scale/offset transformation.
+                (
+                    ele["x1"],
+                    ele["y1"],
+                    ele["x2"],
+                    ele["y2"],
+                ) = self._resolve_element_position(
+                    ele,
+                    self.pdf.x,
+                    self.pdf.y,
+                )
+
                 if scale != 1.0:
                     ele["x1"] = ele["x1"] * scale
                     ele["y1"] = ele["y1"] * scale
@@ -731,6 +929,27 @@ class FlexTemplate:
                             self.handlers[handler_name](**ele)
                     else:
                         self.handlers[handler_name](**ele)
+
+                # Only flow-layout elements move the cursor. Existing
+                # absolute-position templates therefore retain their exact
+                # behaviour.
+                if any(
+                    key in element
+                    for key in ("w", "h", "new_x", "new_y")
+                ):
+                    print("render before update cursor pdf.x,.y:", self.pdf.x, self.pdf.y)
+                    # cursor_x, cursor_y = self._update_layout_cursor(
+                    #     ele["x1"],
+                    #     ele["y1"],
+                    #     ele["x2"],
+                    #     ele["y2"],
+                    #     element.get("new_x"),
+                    #     element.get("new_y"),
+                    #     self.pdf,
+                    # )
+                    # print("render stop:", cursor_x, cursor_y)
+                    # self.pdf.set_xy(cursor_x, cursor_y)
+
         self.texts = {}  # reset modified entries for the next page
 
 
